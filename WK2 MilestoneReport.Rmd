@@ -1,0 +1,524 @@
+---
+title: "Capstone Project - WK2 - Milestone Report"
+author: "Francesco Canuto"
+date: "16/9/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+The purpose of this report is to show the ability to acquire and process the data provided by SwiftKey in order to create a forecasting algorithm using the typical NPL methodologies.
+
+### 1. Set-up libraries and load data
+
+```{r include=FALSE}
+## Load libraries
+
+#library(rJava)
+library(stringi)
+library(stringr)
+library(caret)
+library(tm)
+library(qdap)
+library(wordcloud)
+library(ngram)
+library(data.table)
+library(quanteda)
+library(magrittr)
+library(ggplot2)
+library(dplyr)
+```
+
+
+```{r pressure, echo=FALSE}
+## Set seed and working directory
+
+set.seed(20190827)
+#setwd("~/Documents/GIT/Coursera/MODULE10")
+setwd("~/900_Personale/300_My_Training/100_Coursera/300_Data_Science/MODULE10/TASK1")
+
+## Get data
+
+# files path
+file.blog      <- "en_US/en_US.blogs.txt"
+file.news      <- "en_US/en_US.news.txt"
+file.twitter   <- "en_US/en_US.twitter.txt"
+file.profanity <- "profanity.csv"
+file.abbreviations <- "abbreviations.csv"
+file.short <- "Short_form.csv"
+
+# dimension of files
+size.blog    <- round(file.info(file.blog)$size / 1024^2 ,2)
+size.news    <- round(file.info(file.news)$size / 1024^2 ,2)
+size.twitter <- round(file.info(file.twitter)$size / 1024^2 ,2)
+size.total   <- size.blog + size.news + size.twitter
+
+txt.vector.blog      <- readLines(file.blog,encoding="UTF-8", skipNul = TRUE)
+txt.vector.news      <- readLines(file.news,encoding="UTF-8", skipNul = TRUE)
+txt.vector.twitter   <- readLines(file.twitter,encoding="UTF-8", skipNul = TRUE)
+data.profanity       <- read.csv(file.profanity, header = F)
+data.abbreviation    <- read.csv(file.abbreviations, header = T, sep=";")
+data.short           <- read.csv(file.short, header = T, sep=";")
+
+## Count lines in sources
+rows.blog    <- length(txt.vector.blog)
+rows.news    <- length(txt.vector.news)
+rows.twitter <- length(txt.vector.twitter)
+rows.total   <- rows.blog + rows.news + rows.twitter
+
+## Count words in sources
+## Require *** library stringi
+word.count.blog    <- stri_count_words(txt.vector.blog)
+word.count.news    <- stri_count_words(txt.vector.news)
+word.count.twitter <- stri_count_words(txt.vector.twitter)
+
+word.sum.blog    <- sum(word.count.blog)
+word.sum.news    <- sum(word.count.news)
+word.sum.twitter <- sum(word.count.twitter)
+word.sum.total   <- sum(word.sum.blog + word.sum.news + word.sum.twitter)
+
+## Summarize sources
+source.dimen <- c(size.blog, size.news, size.twitter, size.total)
+source.lines <- c(rows.blog, rows.news, rows.twitter, rows.total)
+source.words <- c(word.sum.blog, word.sum.news, word.sum.twitter, word.sum.total)
+source.words.lines <- c(word.sum.blog/rows.blog,
+                        word.sum.news/rows.news,
+                        word.sum.twitter/rows.twitter,
+                        word.sum.total/rows.total
+)
+
+source.summary <- data.frame(source.dimen, source.lines, source.words, source.words.lines)
+rownames(source.summary) <- c("Blogs", "News", "Twitter", "Total")
+colnames(source.summary) <- c("Dimension_file", "Number_of_Lines", "Number_of_Words", "Words_per_Line")
+```
+
+All data are dowloaded from site and read. A summary of available data as follow:
+
+```{r include=TRUE}
+source.summary
+```
+
+
+### 1. Data Sampling
+
+Data are sampled and splitted creating train, validate and test data.
+
+```{r include=FALSE}
+## Sample and Split Data
+
+
+## Sampling factor for sample size = sampling.factor * total number of lines
+sampling.factor = 0.01
+
+## Sample and combine the sources with a sampling factor
+sample.blog <- sample(txt.vector.blog, size=length(txt.vector.blog)*sampling.factor, replace=FALSE)
+sample.news <- sample(txt.vector.news, size=length(txt.vector.news)*sampling.factor, replace=FALSE)
+sample.twitter <- sample(txt.vector.twitter, size=length(txt.vector.twitter)*sampling.factor, replace=FALSE)
+
+## Combine samples and permutate
+rawData <- c(sample.blog, sample.news, sample.twitter)
+rawData <- sample(rawData, size=length(rawData), replace=FALSE)
+
+## Training ratio
+train.Percent <- 0.6
+validate.Percent <- 0.2
+test.Percent <- 1 - train.Percent - validate.Percent
+test.Split <- test.Percent
+train.Split <- train.Percent/(train.Percent + validate.Percent)
+
+## Split the raw data into test and non-test data sets
+## *** Require library caret
+inTest <- createDataPartition(seq_len(NROW(rawData)), p=test.Split , list=FALSE)
+rawTestData <- rawData[inTest]
+rawNonTestData <- rawData[-inTest]
+
+## Split the non-test data into training and validation data sets
+inTrain <- createDataPartition(seq_len(NROW(rawNonTestData)), p=train.Split,
+                               list=FALSE)
+rawTrainData <- rawNonTestData[inTrain]
+rawValidateData <- rawNonTestData[-inTrain]
+
+## Count lines in data sets
+trainLines <- length(rawTrainData)
+validateLines <- length(rawValidateData)
+testLines <- length(rawTestData)
+rawLines <- trainLines + validateLines + testLines
+
+## Count words in data sets
+## Require library stringi
+trainWords <- sum(stri_count_words(rawTrainData))
+validateWords <- sum(stri_count_words(rawValidateData))
+testWords <- sum(stri_count_words(rawTestData))
+rawWords <- trainWords + validateWords + testWords
+
+## Summarize data sets
+datasetLines <- c(trainLines, validateLines, testLines, rawLines)
+datasetWords <- c(trainWords, validateWords, testWords, rawWords)
+datasetWordsPerLine <- c(trainWords/trainLines,
+                         validateWords/validateLines,
+                         testWords/testLines,
+                         rawWords/rawLines
+)
+datasetSummary <- data.frame(datasetLines, datasetWords, datasetWordsPerLine)
+rownames(datasetSummary) <- c("Training", "Validation", "Testing", "Total")
+colnames(datasetSummary) <- c("Number_of_Lines", "Number_of_Words", "Words_per_Line")
+
+```
+
+
+```{r include=TRUE}
+datasetSummary
+```
+
+
+### 2. Data Cleaning
+
+```{r include=FALSE}
+## CLEAN DATA
+
+## preprocessData: clean a corpus by converting its text to plain text document
+## and lower case, replacing contractions with their full forms, and
+## removing profanities, numbers and punctuation. Removing English stopwords
+## is optional.
+##
+## rawCorpus = input text to be preprocessed.
+## isStopWordsRemoved = FALSE, set to TRUE to remove stopwords
+## cleanCorpus = output preprocessed corpus
+##
+
+preprocessData <- function(rawCorpus, bannedWords, isStopWordsRemoved=FALSE) {
+  
+  if (!require(tm)) {
+    stop("Library tm is missing.")
+  }
+  ## Convert to plain text
+  cleanCorpus <- tm_map(rawCorpus, PlainTextDocument)
+  
+  ## Replace contractions with their full form using qdap dictionary
+  ## from https://trinkerrstuff.wordpress.com/my-r-packages/qdap/
+  if (!require(qdap)) {
+    stop("Library qdap is missing.")
+  }
+  cleanCorpus <- tm_map(cleanCorpus, content_transformer(replace_contraction))
+  
+  remove.decimals     <- function(x) {gsub("([0-9]*)\\.([0-9]+)", "\\1 \\2", x)}
+  remove.hashtags     <- function(x) {gsub("#[a-zA-z0-9]+", " ", x)}
+  remove.noneng       <- function(x) {gsub("\\W+", " ",x)}
+  
+  cleanCorpus <- tm_map(cleanCorpus, remove.decimals)
+  cleanCorpus <- tm_map(cleanCorpus, remove.noneng)
+  cleanCorpus <- tm_map(cleanCorpus, remove.hashtags)
+  ## Remove numbers, puntuation and strip white space
+  cleanCorpus <- tm_map(cleanCorpus, removeNumbers)
+  cleanCorpus <- tm_map(cleanCorpus, stripWhitespace)
+  cleanCorpus <- tm_map(cleanCorpus, removePunctuation)
+  cleanCorpus <- tm_map(cleanCorpus, tolower)
+  
+  ## Remove profanities defined in the banned word list
+  cleanCorpus <- tm_map(cleanCorpus, removeWords, bannedWords)
+  
+  ## Remove stopwords
+  if (isStopWordsRemoved) {
+    cleanCorpus <- tm_map(cleanCorpus, removeWords, stopwords("en"))
+  }
+  
+  return(cleanCorpus)
+}
+
+
+## Get data WITH English stopwords
+
+## Convert training data to corpus and inspect a few documents
+trainCorpus <- SimpleCorpus(VectorSource(rawTrainData))
+```
+
+Data are converted in corpus and few documents are inspected
+
+```{r include=TRUE}
+inspect(trainCorpus[c(1,length(trainCorpus)%/%2, length(trainCorpus)-20)])
+```
+
+```{r include=FALSE}
+## Clean the training, validate, and test corpuses
+trainCorpus <- preprocessData(trainCorpus, data.profanity$V1,
+                                   isStopWordsRemoved=FALSE)
+```
+Documents are cleaned (STOPWORDS ARE NOT REMOVED)
+```{r include=TRUE}
+inspect(trainCorpus[c(1,length(trainCorpus)%/%2, length(trainCorpus)-20)])
+```
+
+```{r include=FALSE}
+validateCorpus <- SimpleCorpus(VectorSource(rawValidateData))
+validateCorpus <- preprocessData(validateCorpus, data.profanity$V1,
+                                 isStopWordsRemoved=FALSE)
+
+testCorpus <- SimpleCorpus(VectorSource(rawTestData))
+testCorpus <- preprocessData(testCorpus, data.profanity$V1,
+                             isStopWordsRemoved=FALSE)
+
+```
+
+```{r include=FALSE}
+## Get data WITHOUT English stopwords
+
+## Convert training data to corpus and inspect a few documents
+trainNwsCorpus <- SimpleCorpus(VectorSource(rawTrainData))
+inspect(trainNwsCorpus[c(1,length(trainNwsCorpus)%/%2, length(trainNwsCorpus)-20)])
+
+## Clean the training, validate, and test corpuses
+trainNwsCorpus <- preprocessData(trainNwsCorpus, data.profanity$V1,
+                                 isStopWordsRemoved=TRUE)
+```
+
+Documents are cleaned (STOPWORDS ARE REMOVED). It is possible to see how corpus has been cleaned even from stop word
+```{r include=TRUE}
+inspect(trainNwsCorpus[c(1,length(trainNwsCorpus)%/%2, length(trainNwsCorpus)-20)])
+```
+
+```{r include=FALSE}
+validateNwsCorpus <- SimpleCorpus(VectorSource(rawValidateData))
+validateNwsCorpus <- preprocessData(validateNwsCorpus, data.profanity$V1,
+                                    isStopWordsRemoved=TRUE)
+
+testNwsCorpus <- SimpleCorpus(VectorSource(rawTestData))
+testNwsCorpus <- preprocessData(testNwsCorpus, data.profanity$V1,
+                                isStopWordsRemoved=TRUE)
+
+```
+
+### 3. NGRAMS Creation
+
+### Creation of NGRAM without dropping stopwords
+
+```{r include=FALSE}
+## 03 Generate Ngrams ####################################################
+## Generate Ngrams and Explore the data WITH stopwords
+
+## getTermFrequency: get frequencies of terms in a corpus, in decreasing order.
+##
+## corpus = input a corpus
+## sparse = input a sparse fraction 0 to 1
+## freqDf = output a data frame of terms and frequencies
+##
+getTermFrequency <- function(corpus, sparse) {
+  if (!require(tm)) {
+    stop("Library tm is missing.")
+  }
+  ## Convert to DocumnetTermMatrix
+  dtm <- DocumentTermMatrix(corpus)
+  
+  ## Get frequencies of terms
+  if (sparse >= 1) {
+    freq <- colSums(as.matrix(dtm))
+  } else {
+    freq <- colSums(as.matrix(removeSparseTerms(dtm, sparse=sparse)))
+  }
+  
+  ## Sort in decreasing order and output
+  freq <- sort(freq, decreasing=TRUE)
+  freqDf <- data.frame(ngram=names(freq), freq=freq)
+}
+
+## getNgram: extracts ngrams with the ngram library
+## corpus = input, a SimpleCorpus
+## n = input, number of word in ngrams
+## ng = output, a dataframe of ngram, freq, and probability
+##
+getNgram <- function(corpus, n=2) {
+  if (!require(ngram)) {
+    stop("Library ngram is missing.")
+  }
+  
+  ## Convert corpus to a string
+  str <- concatenate(corpus$content)
+  ng <- ngram(str, n=n)
+  return(get.phrasetable(ng))
+}
+
+## summaryNgram: summarizes the ngram generated by getNgram
+## ngram = input, a dataframe from getNgram
+## summaryTable = output, a dataframe of number of ngrams 
+##   at frequencies >= 1, 2, 3, and 4
+##
+summaryNgram <- function(ngram) {
+  freqNWords <- function(n) sum(ngram$freq >= n)
+  freqNOccurence <- function(n) sum(ngram[ngram$freq >= n, "freq"])
+  n2 = 10
+  n3 = 25
+  n4 = 50
+  n5 = 100
+  totalWords <- dim(ngram)[1]
+  freq2Words <- freqNWords(n2)
+  freq3Words <- freqNWords(n3)
+  freq4Words <- freqNWords(n4)
+  freq5Words <- freqNWords(n5)
+  numWords <- c(totalWords, freq2Words, freq3Words, freq4Words, freq5Words)
+  fracWords <- c(1.0, round(freq2Words/totalWords, 4),
+                 round(freq3Words/totalWords, 4), 
+                 round(freq4Words/totalWords, 4),
+                 round(freq5Words/totalWords, 4))
+  totalOccurrence <- sum(ngram$freq)
+  freq2Occurrence <- freqNOccurence(n2)
+  freq3Occurrence <- freqNOccurence(n3)
+  freq4Occurrence <- freqNOccurence(n4)
+  freq5Occurrence <- freqNOccurence(n5)
+  probWords <- c(1.0, round(freq2Occurrence/totalOccurrence, 4),
+                 round(freq3Occurrence/totalOccurrence, 4),
+                 round(freq4Occurrence/totalOccurrence, 4),
+                 round(freq5Occurrence/totalOccurrence, 4))
+  summaryData <- data.frame(numWords, fracWords, probWords)
+  colnames(summaryData) <- c("Number_of_Words", "Fraction_of_Total", "Probability")
+  rownames(summaryData) <- c("All", 
+                             paste("Freq >= ", as.character(n2), collapse=''),
+                             paste("Freq >= ", as.character(n3), collapse=''),
+                             paste("Freq >= ", as.character(n4), collapse=''),
+                             paste("Freq >= ", as.character(n5), collapse=''))
+  
+  return(summaryData)
+}
+
+##*****************************************************
+## Generate Ngrams and Explore the data WITH stopwords
+##*****************************************************
+
+system.time(train1Gram <- getNgram(trainCorpus, n=1))
+```
+
+1Ngrams are created (ngrams with 1 words) - WITH STOPWORDS
+
+```{r include=TRUE}
+summaryNgram(train1Gram)
+wordcloud(train1Gram$ngram, train1Gram$freq, scale=c(7, 1), 
+          max.words=20, random.order=FALSE)
+train1Gram.data <- data.frame(ngram=train1Gram$ngrams[1:30],freq=train1Gram$freq[1:30])
+p <- ggplot(train1Gram.data, aes(y=freq, x=reorder(ngram,freq))) +
+  geom_bar(stat='identity',fill = "#FF6666") +
+  theme(axis.text.x = element_text(angle = 90))+
+  labs(y = "Ngram Counts", x = "Top Ngram")
+ggtitle(paste("Top"))
+p
+```
+
+```{r include=TRUE}
+system.time(train2Gram <- getNgram(trainCorpus, n=2))
+```
+
+2Ngrams are created (ngrams with 2 words) - WITH STOPWORDS
+
+```{r include=TRUE}
+summaryNgram(train2Gram)
+wordcloud(train2Gram$ngram, train2Gram$freq, scale=c(3, 1), 
+          max.words=20, random.order=FALSE)
+train2Gram.data <- data.frame(ngram=train2Gram$ngrams[1:30],freq=train2Gram$freq[1:30])
+p <- ggplot(train2Gram.data, aes(y=freq, x=reorder(ngram,freq))) +
+  geom_bar(stat='identity',fill = "#FF6666") +
+  theme(axis.text.x = element_text(angle = 90))+
+  labs(y = "Ngram Counts", x = "Top Ngram")
+ggtitle(paste("Top"))
+p
+```
+
+```{r include=FALSE}
+system.time(train3Gram <- getNgram(trainCorpus, n=3))
+```
+
+3Ngrams are created (ngrams with 3 words) - WITH STOPWORDS
+
+```{r include=TRUE}
+summaryNgram(train3Gram)
+wordcloud(train3Gram$ngram, train3Gram$freq, scale=c(1, 1), 
+          max.words=20, random.order=FALSE)
+train3Gram.data <- data.frame(ngram=train3Gram$ngrams[1:30],freq=train3Gram$freq[1:30])
+p <- ggplot(train3Gram.data, aes(y=freq, x=reorder(ngram,freq))) +
+  geom_bar(stat='identity',fill = "#FF6666") +
+  theme(axis.text.x = element_text(angle = 90))+
+  labs(y = "Ngram Counts", x = "Top Ngram")
+ggtitle(paste("Top"))
+p
+```
+
+```{r include=FALSE}
+## Get validate and test ngrams
+validate1Gram <- getNgram(validateCorpus, n=1)
+validate2Gram <- getNgram(validateCorpus, n=2)
+validate3Gram <- getNgram(validateCorpus, n=3)
+
+test1Gram <- getNgram(testCorpus, n=1)
+test2Gram <- getNgram(testCorpus, n=2)
+test3Gram <- getNgram(testCorpus, n=3)
+```
+
+### Creation of NGRAM  dropping stopwords
+
+1Ngrams are created (ngrams with 1 word) - WITHOUT STOPWORDS
+
+```{r include=TRUE}
+##*****************************************************
+## Generate Ngrams and Explore the data WITHOUT stopwords
+##*****************************************************
+
+system.time(trainNws1Gram <- getNgram(trainNwsCorpus, n=1))
+
+summaryNgram(trainNws1Gram)
+wordcloud(trainNws1Gram$ngram, trainNws1Gram$freq, scale=c(7, 1), 
+          max.words=20, random.order=FALSE)
+trainNws1Gram <- data.frame(ngram=trainNws1Gram$ngrams[1:30],freq=trainNws1Gram$freq[1:30])
+p <- ggplot(trainNws1Gram, aes(y=freq, x=reorder(ngram,freq))) +
+  geom_bar(stat='identity',fill = "#FF6666") +
+  theme(axis.text.x = element_text(angle = 90))+
+  labs(y = "Ngram Counts", x = "Top Ngram")
+ggtitle(paste("Top"))
+p
+```
+
+2Ngrams are created (ngrams with 2 words) - WITHOUT STOPWORDS
+
+```{r include=TRUE}
+system.time(trainNws2Gram <- getNgram(trainNwsCorpus, n=2))
+summaryNgram(trainNws2Gram)
+wordcloud(trainNws2Gram$ngram, trainNws2Gram$freq, scale=c(3, 1), 
+          max.words=20, random.order=FALSE)
+trainNws2Gram.data <- data.frame(ngram=trainNws2Gram$ngrams[1:30],freq=trainNws2Gram$freq[1:30])
+p <- ggplot(trainNws2Gram.data, aes(y=freq, x=reorder(ngram,freq))) +
+  geom_bar(stat='identity',fill = "#FF6666") +
+  theme(axis.text.x = element_text(angle = 90))+
+  labs(y = "Ngram Counts", x = "Top Ngram")
+ggtitle(paste("Top"))
+p
+```
+
+
+3Ngrams are created (ngrams with 3 words) - WITHOUT STOPWORDS
+
+```{r include=TRUE}
+system.time(trainNws3Gram <- getNgram(trainNwsCorpus, n=3))
+summaryNgram(trainNws3Gram)
+wordcloud(trainNws3Gram$ngram, trainNws3Gram$freq, scale=c(1, 1), 
+          max.words=20, random.order=FALSE)
+trainNws3Gram.data <- data.frame(ngram=trainNws3Gram$ngrams[1:30],freq=trainNws3Gram$freq[1:30])
+p <- ggplot(trainNws3Gram.data, aes(y=freq, x=reorder(ngram,freq))) +
+  geom_bar(stat='identity',fill = "#FF6666") +
+  theme(axis.text.x = element_text(angle = 90))+
+  labs(y = "Ngram Counts", x = "Top Ngram")
+ggtitle(paste("Top"))
+p
+```
+
+
+```{r include=FALSE}
+validateNws1Gram <- getNgram(validateNwsCorpus, n=1)
+validateNws2Gram <- getNgram(validateNwsCorpus, n=2)
+validateNws3Gram <- getNgram(validateNwsCorpus, n=3)
+
+testNws1Gram <- getNgram(testNwsCorpus, n=1)
+testNws2Gram <- getNgram(testNwsCorpus, n=2)
+testNws3Gram <- getNgram(testNwsCorpus, n=3)
+```
+
+### 4. Next Steps
+Next step consists 
