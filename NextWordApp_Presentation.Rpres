@@ -1,0 +1,49 @@
+Next Word Prediction
+========================================================
+author: Francesco Canuto
+date: 19/09/2019
+autosize: true
+
+NPL algorithm to predict next word
+
+
+Introduction
+========================================================
+
+The goal of this project is to create a product to highlight the prediction algorithm and to provide an interface that can be accessed by others. 
+For this aim to deliverables are provided:
+
+- A Shiny app that takes as input a phrase (multiple words) in a text box input and outputs a prediction of the next word.
+- A slide deck consisting of no more than 5 slides created with R Studio Presenter pitching your algorithm and app as if you were presenting to your boss or an investor.
+
+Algorithm development steps
+========================================================
+
+In order to develop next prediction model algortihm the followinf steps have been followed:
+
+1. Pre-processing data from Swiftkey case study (EDA)
+
+2. Generation of nGram table and calculus of probability with smoothing metodology (GTmethod, Discount Metod) to consider not observed ngrams
+
+3. Creation of prediction based on BakeOff algorithm starting the higher order of n-gram to lower order
+
+4. Creation of a ranking table with possible predicted words
+
+Shiny application
+========================================================
+
+The Shiny application is based on ngrams saved data.
+In a text box it is possible to digit the phare for which we would like to predict next word and application will present the result of possible predicted word order per probability of occurrence.
+
+![Example](Shiny_App_Example.png)
+
+References
+========================================================
+
+- The Shiny Apps can be found at: http://shiny.rstudio.com/
+
+- The Exploratory Data Analysis link: https://rpubs.com/fra_canuto/528958
+
+- The github repository link: https://github.com/FrancescoCanuto/CapstoneProject
+
+
